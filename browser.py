@@ -12,7 +12,8 @@ def request(url, headers=None, redirects=0):
         raise Exception("Too many redirects")
     # if url is in cache, return the cached value
     if init_url in cached_urls:
-        return cached_urls[init_url]
+        if cached_urls[init_url][0] > time.time():
+            return cached_urls[init_url][1], cached_urls[init_url][2]
 
     # split url and check for scheme
     scheme, url = url.split("://", 1)
@@ -47,18 +48,18 @@ def request(url, headers=None, redirects=0):
 
     # check for user-input headers
     if headers is None:
-        headers = {"user-agent": "Chrome/112.0.5615.45"}
-    else:
-        map(str.lower, headers.keys())
+        headers = {"User-Agent": "Chrome/112.0.5615.45"}
     
     # create request string and update headers within it
-    req = "GET {} HTTP/1.1\r\n".format(path).encode("utf8") + \
-        "Host: {}\r\n".format(host).encode("utf8") + \
-        "Connection: close\r\n".encode("utf8")
+    req = "GET {} HTTP/1.1\r\n".format(path) + \
+        "Host: {}\r\n".format(host) + \
+        "Connection: close\r\n"
     for header, value in headers.items():
-        req += "{}: {}\r\n".format(header, value).encode("utf8")
+        if header.lower() not in req:
+            req += "{}: {}\r\n".format(header, value)
+    req += "\r\n"
 
-    s.send(req)
+    s.send(req.encode("utf8"))
     response = s.makefile("r", encoding="utf8", newline="\r\n")
 
     # read status line and check for errors
@@ -93,11 +94,10 @@ def request(url, headers=None, redirects=0):
         if "no-store" in cur_headers["cache-control"]:
             return cur_headers, body
         if "max-age" in cur_headers["cache-control"]:
-            cached_urls[init_url] = (cur_headers, body)
             max_age = int(cur_headers["cache-control"].split("=", 1)[1])
-            # if max_age > 0:
-            #     time.sleep(max_age)
-            #     del cached_urls[init_url]
+            cur_time = time.time() + max_age
+            cached_urls[init_url] = (cur_time, cur_headers, body)
+
     return cur_headers, body
 
 def show(body):
