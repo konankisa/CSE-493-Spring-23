@@ -1,9 +1,12 @@
 import socket
 import ssl
 import time
-import sys
+import tkinter
 
 cached_urls = {}
+WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18
+SCROLLSTEP = 100
 
 def request(url, headers=None, redirects=0):
     # if too many redirects, raise an exception
@@ -100,8 +103,8 @@ def request(url, headers=None, redirects=0):
 
     return cur_headers, body
 
-def show(body):
-    # print body without tags
+def lex(body):
+    text = ""
     tag = False
     for t in body:
         if t == "<":
@@ -109,12 +112,45 @@ def show(body):
         elif t == ">":
             tag = False
         elif not tag:
-            print(t, end="")
+           text += t
+    return text
 
-def load(url):
-    # load url and print body
-    headers, body = request(url)
-    show(body)
+def layout(text):
+    display_list = []
+    cur_x, cur_y = HSTEP, VSTEP
+    for c in text:
+        display_list.append((cur_x, cur_y, c))
+        cur_x += HSTEP
+        if cur_x >= WIDTH - HSTEP:
+            cur_y += VSTEP
+            cur_x = HSTEP
+    return display_list
+
+class Browser:
+    def __init__(self) -> None:
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
+        self.canvas.pack()
+        self.window.bind("<Down>", self.scrolldown)
+        self.scroll = 0
+    
+    def scrolldown(self, ev) -> None:
+        self.scroll += SCROLLSTEP
+        self.draw()
+    
+    def draw(self):
+        self.canvas.delete("all")
+        for x, y, c in self.display_list:
+            self.canvas.create_text(x, y - self.scroll, text=c)
+
+    def load(self, url):
+        # load url and print body
+        headers, body = request(url)
+        text = lex(body)
+        self.display_list = layout(text)
+        self.draw()
 
 if __name__ == "__main__":
-    load(sys.argv[1])
+    import sys
+    Browser().load(sys.argv[1])
+    tkinter.mainloop()
