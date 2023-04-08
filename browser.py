@@ -2,11 +2,12 @@ import socket
 import ssl
 import time
 import tkinter
+import tkinter.font
 
 cached_urls = {}
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
-SCROLLSTEP = 100
+SCROLL_STEP = 100
 
 def request(url, headers=None, redirects=0):
     # if too many redirects, raise an exception
@@ -82,7 +83,7 @@ def request(url, headers=None, redirects=0):
     # handle redirects
     if status >= "300" and status < "400":
         location = cur_headers["location"]
-        if not location.startswith(scheme):
+        if not location.startswith(scheme): 
             location = scheme + "://" + host + location
         return request(location, headers, redirects + 1)
     
@@ -119,23 +120,68 @@ def layout(text):
     display_list = []
     cur_x, cur_y = HSTEP, VSTEP
     for c in text:
-        display_list.append((cur_x, cur_y, c))
-        cur_x += HSTEP
-        if cur_x >= WIDTH - HSTEP:
-            cur_y += VSTEP
+        if c == "\n":
+            cur_y += VSTEP * 2
             cur_x = HSTEP
+        else:
+            display_list.append((cur_x, cur_y, c))
+            cur_x += HSTEP
+            if cur_x >= WIDTH - HSTEP:
+                cur_y += VSTEP
+                cur_x = HSTEP
     return display_list
 
 class Browser:
-    def __init__(self) -> None:
+    def __init__(self):
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
-        self.canvas.pack()
-        self.window.bind("<Down>", self.scrolldown)
+        self.canvas.pack(fill="both", expand=True)
         self.scroll = 0
+        self.font_size = 16
+        self.window.bind("<Down>", self.scrolldown)
+        self.window.bind("<Up>", self.scrollup)
+        self.window.bind("<Configure>", self.resize)
+        self.window.bind("<MouseWheel>", self.scrolling)
+        self.window.bind("+", self.zoomin)
+        self.window.bind("-", self.zoomout)
     
-    def scrolldown(self, ev) -> None:
-        self.scroll += SCROLLSTEP
+    def scrolldown(self, ev):
+        self.scroll += SCROLL_STEP
+        self.draw()
+    
+    def scrollup(self, ev):
+        self.scroll -= SCROLL_STEP
+        if self.scroll < 0:
+            self.scroll = 0
+        self.draw()
+    
+    def scrolling(self, ev):
+        if ev.delta > 0:
+            self.scrollup(ev)
+        else:
+            self.scrolldown(ev)
+    
+    def zoomin(self, ev):
+        global VSTEP, HSTEP
+        VSTEP *= 2
+        HSTEP *= 2
+        self.font_size *= 2
+        self.display_list = layout(self.text)
+        self.draw()
+    
+    def zoomout(self, ev):
+        global VSTEP, HSTEP
+        VSTEP //= 2
+        HSTEP //= 2
+        self.font_size //= 2
+        self.display_list = layout(self.text)
+        self.draw()
+    
+    def resize(self, ev):
+        global WIDTH, HEIGHT
+        WIDTH = ev.width
+        HEIGHT = ev.height
+        self.display_list = layout(self.text)
         self.draw()
     
     def draw(self):
@@ -143,13 +189,13 @@ class Browser:
         for x, y, c in self.display_list:
             if y > self.scroll + HEIGHT: continue
             if y + VSTEP < self.scroll: continue
-            self.canvas.create_text(x, y - self.scroll, text=c)
+            self.canvas.create_text(x, y - self.scroll, text=c, font=tkinter.font.Font(size=self.font_size))
 
     def load(self, url):
         # load url and print body
         headers, body = request(url)
-        text = lex(body)
-        self.display_list = layout(text)
+        self.text = lex(body)
+        self.display_list = layout(self.text)
         self.draw()
 
 if __name__ == "__main__":
