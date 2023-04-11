@@ -10,6 +10,7 @@ cached_urls = {}
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 100
+FONTS = {}
 
 def request(url, headers=None, redirects=0):
     # if too many redirects, raise an exception
@@ -106,20 +107,93 @@ def request(url, headers=None, redirects=0):
 
     return cur_headers, body
 
+@dataclass
 class Text:
     text: str
-
-    def __init__(self, text): 
-        self.text = text
     
-    def __str__(self) -> str:
-        return "Text({})".format(self.text)
+    def __repr__(self) -> str:
+        return "Text('{}')".format(self.text)
 
 @dataclass
 class Tag:
     tag: str
+    
+    def __repr__(self) -> str:
+        return "Tag('{}')".format(self.tag)
 
 Token = Union[Text, Tag]
+
+class Layout:
+    def __init__(self, tokens):
+        self.display_list = []
+        self.line = []
+        self.cursor_x = HSTEP
+        self.cursor_y = VSTEP
+        self.weight = "normal"
+        self.style = "roman"
+        self.size = 16
+        for token in tokens:
+            self.token(token)
+        self.flush()
+    
+    def flush(self):
+        if not self.line: return
+        metrics = [font.metrics() for x, word, font in self.line]
+        max_ascent = max([metric["ascent"] for metric in metrics])
+        baseline = self.cursor_y + 1.25 * max_ascent
+        for x, word, font in self.line:
+            y = baseline - font.metrics("ascent")
+            self.display_list.append((x, y, word, font))
+        self.cursor_x = HSTEP
+        self.line = []
+        max_descent = max([metric["descent"] for metric in metrics])
+        self.cursor_y = baseline + 1.25 * max_descent
+
+    def token(self, tok):
+        if isinstance(tok, Text):
+            self.text(tok)
+        else:
+            assert isinstance(tok, Tag)
+            if tok.tag == "i":
+                self.style = "italic"
+            elif tok.tag == "/i":
+                self.style = "roman"
+            elif tok.tag == "b":
+                self.weight = "bold"
+            elif tok.tag == "/b":
+                self.weight = "normal"
+            elif tok.tag == "small":
+                self.size -= 2
+            elif tok.tag == "/small":
+                self.size += 2
+            elif tok.tag == "big":
+                self.size += 4
+            elif tok.tag == "/big":
+                self.size -= 4
+            elif tok.tag == "br":
+                self.flush()
+            elif tok.tag == "/p":
+                self.flush()
+                self.cursor_y += VSTEP
+    
+    def text(self, token):
+        font = get_font(self.size, self.weight, self.style)
+        text = token.text
+        for word in text.split():
+            w = font.measure(word)
+            if self.cursor_x + w > WIDTH - HSTEP:
+                self.cursor_y += font.metrics("linespace") * 1.25
+                self.cursor_x = HSTEP
+                self.flush()
+            self.line.append((self.cursor_x, word, font))
+            self.cursor_x += w + font.measure(" ")
+
+def get_font(size, weight, slant):
+    key = (size, weight, slant)
+    if key not in FONTS:
+        font = tkinter.font.Font(size=size, weight=weight, slant=slant)
+        FONTS[key] = font
+    return FONTS[key]
 
 def lex(body) -> List[Token]:
     tokens: List[Token] = []
@@ -141,48 +215,12 @@ def lex(body) -> List[Token]:
         tokens.append(Text(text))
     return tokens
 
-def layout(tokens: List[Token]):
-    display_list = []
-    bold = False
-    cur_x, cur_y = HSTEP, VSTEP
-    for token in tokens:
-        if isinstance(token, Text):
-            font: tkinter.font.Font = tkinter.font.Font(
-                family="Times",
-                size=16,
-                weight="bold" if bold else "normal",
-                slant="italic",
-            )
-            text = token.text
-            for word in text.split(" "):
-                w = font.measure(word + " ")
-                if cur_x >= WIDTH - HSTEP:
-                    cur_y += font.metrics("linespace") * 1.25
-                    cur_x = HSTEP
-                display_list.append((cur_x, cur_y, word))
-                cur_x += w
-        else:
-            assert isinstance(token, Tag)
-            tag = token
-            if tag.tag == "b":
-                bold = True
-            elif tag.tag == "/b":
-                bold = False
-    return display_list
-
 class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
-        self.bi_times = tkinter.font.Font(
-            family="Times",
-            size=16,
-            weight="bold",
-            slant="italic",
-        )
         self.canvas.pack(fill="both", expand=True)
         self.scroll = 0
-        self.font_size = 16
         self.window.bind("<Down>", self.scrolldown)
         self.window.bind("<Up>", self.scrollup)
         self.window.bind("<Configure>", self.resize)
@@ -211,7 +249,8 @@ class Browser:
         VSTEP *= 2
         HSTEP *= 2
         self.font_size *= 2
-        self.display_list = layout(self.text)
+        layout = Layout(self.tokens)
+        self.display_list = layout.display_list
         self.draw()
     
     def zoomout(self, ev):
@@ -219,28 +258,28 @@ class Browser:
         VSTEP //= 2
         HSTEP //= 2
         self.font_size //= 2
-        self.display_list = layout(self.text)
+        self.display_list = Layout(self.tokens).display_list
         self.draw()
     
     def resize(self, ev):
         global WIDTH, HEIGHT
         WIDTH = ev.width
         HEIGHT = ev.height
-        self.display_list = layout(self.text)
+        self.display_list = Layout(self.tokens).display_list
         self.draw()
     
     def draw(self):
         self.canvas.delete("all")
-        for x, y, c in self.display_list:
+        for x, y, c, f in self.display_list:
             if y > self.scroll + HEIGHT: continue
             if y + VSTEP < self.scroll: continue
-            self.canvas.create_text(x, y - self.scroll, text=c, font=self.bi_times, anchor="nw")
+            self.canvas.create_text(x, y - self.scroll, text=c, font=f, anchor="nw")
 
     def load(self, url):
         # load url and print body
         headers, body = request(url)
-        self.text = lex(body)
-        self.display_list = layout(self.text)
+        self.tokens = lex(body)
+        self.display_list = Layout(self.tokens).display_list
         self.draw()
 
 if __name__ == "__main__":
