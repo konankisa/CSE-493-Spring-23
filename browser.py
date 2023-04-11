@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 import socket
 import ssl
 import time
 import tkinter
 import tkinter.font
+from typing import List, Union
 
 cached_urls = {}
 WIDTH, HEIGHT = 800, 600
@@ -104,37 +106,80 @@ def request(url, headers=None, redirects=0):
 
     return cur_headers, body
 
-def lex(body):
+class Text:
+    text: str
+
+    def __init__(self, text): 
+        self.text = text
+    
+    def __str__(self) -> str:
+        return "Text({})".format(self.text)
+
+@dataclass
+class Tag:
+    tag: str
+
+Token = Union[Text, Tag]
+
+def lex(body) -> List[Token]:
+    tokens: List[Token] = []
     text = ""
     tag = False
     for t in body:
         if t == "<":
+            if text:
+                tokens.append(Text(text))
+                text = ""
             tag = True
         elif t == ">":
+            tokens.append(Tag(text))
+            text = ""
             tag = False
-        elif not tag:
-           text += t
-    return text
-
-def layout(text):
-    display_list = []
-    cur_x, cur_y = HSTEP, VSTEP
-    for c in text:
-        if c == "\n":
-            cur_y += VSTEP * 2
-            cur_x = HSTEP
         else:
-            display_list.append((cur_x, cur_y, c))
-            cur_x += HSTEP
-            if cur_x >= WIDTH - HSTEP:
-                cur_y += VSTEP
-                cur_x = HSTEP
+            text += t
+    if not tag and text:
+        tokens.append(Text(text))
+    return tokens
+
+def layout(tokens: List[Token]):
+    display_list = []
+    bold = False
+    cur_x, cur_y = HSTEP, VSTEP
+    for token in tokens:
+        if isinstance(token, Text):
+            font: tkinter.font.Font = tkinter.font.Font(
+                family="Times",
+                size=16,
+                weight="bold" if bold else "normal",
+                slant="italic",
+            )
+            text = token.text
+            for word in text.split(" "):
+                w = font.measure(word + " ")
+                if cur_x >= WIDTH - HSTEP:
+                    cur_y += font.metrics("linespace") * 1.25
+                    cur_x = HSTEP
+                display_list.append((cur_x, cur_y, word))
+                cur_x += w
+        else:
+            assert isinstance(token, Tag)
+            tag = token
+            if tag.tag == "b":
+                bold = True
+            elif tag.tag == "/b":
+                bold = False
     return display_list
 
 class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
+        self.bi_times = tkinter.font.Font(
+            family="Times",
+            size=16,
+            weight="bold",
+            slant="italic",
+        )
         self.canvas.pack(fill="both", expand=True)
         self.scroll = 0
         self.font_size = 16
@@ -189,7 +234,7 @@ class Browser:
         for x, y, c in self.display_list:
             if y > self.scroll + HEIGHT: continue
             if y + VSTEP < self.scroll: continue
-            self.canvas.create_text(x, y - self.scroll, text=c, font=tkinter.font.Font(size=self.font_size))
+            self.canvas.create_text(x, y - self.scroll, text=c, font=self.bi_times, anchor="nw")
 
     def load(self, url):
         # load url and print body
