@@ -123,6 +123,13 @@ class Tag:
 
 Token = Union[Text, Tag]
 
+@dataclass
+class LineItem:
+    x: float
+    text: str
+    font: tkinter.font.Font
+    sup: bool
+
 class Layout:
     def __init__(self, tokens):
         self.display_list = []
@@ -131,6 +138,8 @@ class Layout:
         self.cursor_y = VSTEP
         self.weight = "normal"
         self.style = "roman"
+        self.centered = False
+        self.superscript = False
         self.size = 16
         for token in tokens:
             self.token(token)
@@ -138,12 +147,28 @@ class Layout:
     
     def flush(self):
         if not self.line: return
-        metrics = [font.metrics() for x, word, font in self.line]
+
+        line_length = self.cursor_x - HSTEP
+        shift = 0
+        if self.centered:
+            shift = (WIDTH - line_length) / 2 - HSTEP
+        
+        metrics = [item.font.metrics() for item in self.line]
         max_ascent = max([metric["ascent"] for metric in metrics])
         baseline = self.cursor_y + 1.25 * max_ascent
-        for x, word, font in self.line:
-            y = baseline - font.metrics("ascent")
-            self.display_list.append((x, y, word, font))
+
+        base_font = item.font
+        for item in self.line:
+            if item.sup:
+                sup_font = base_font.copy()
+                sup_font.config(size=base_font.cget("size") // 2)
+                #sup_font = get_font(item.font.cget("size") // 2, item.font.cget("weight"), item.font.cget("slant"))
+                y = baseline - max_ascent
+                self.display_list.append((item.x + shift, y, item.text, sup_font))
+            else:
+                y = baseline - item.font.metrics("ascent")
+                self.display_list.append((item.x + shift, y, item.text, item.font))
+        
         self.cursor_x = HSTEP
         self.line = []
         max_descent = max([metric["descent"] for metric in metrics])
@@ -175,6 +200,16 @@ class Layout:
             elif tok.tag == "/p":
                 self.flush()
                 self.cursor_y += VSTEP
+            elif tok.tag.startswith("h1"):
+                self.flush()
+                self.centered = True
+            elif tok.tag.startswith("/h1"):
+                self.flush()
+                self.centered = False
+            elif tok.tag.startswith("sup"):
+                self.superscript = True
+            elif tok.tag.startswith("/sup"):
+                self.superscript = False
     
     def text(self, token):
         font = get_font(self.size, self.weight, self.style)
@@ -185,7 +220,7 @@ class Layout:
                 self.cursor_y += font.metrics("linespace") * 1.25
                 self.cursor_x = HSTEP
                 self.flush()
-            self.line.append((self.cursor_x, word, font))
+            self.line.append(LineItem(self.cursor_x, word, font, self.superscript))
             self.cursor_x += w + font.measure(" ")
 
 def get_font(size, weight, slant):
