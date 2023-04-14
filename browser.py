@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 import socket
 import ssl
 import time
@@ -123,13 +124,6 @@ class Tag:
 
 Token = Union[Text, Tag]
 
-@dataclass
-class LineItem:
-    x: float
-    text: str
-    font: tkinter.font.Font
-    sup: bool
-
 class Layout:
     def __init__(self, tokens):
         self.display_list = []
@@ -140,6 +134,7 @@ class Layout:
         self.style = "roman"
         self.centered = False
         self.superscript = False
+        self.small_cap = False
         self.size = 16
         for token in tokens:
             self.token(token)
@@ -151,23 +146,18 @@ class Layout:
         line_length = self.cursor_x - HSTEP
         shift = 0
         if self.centered:
-            shift = (WIDTH - line_length) / 2 - HSTEP
+            shift = (WIDTH - line_length) / 2 - 5
         
-        metrics = [item.font.metrics() for item in self.line]
+        metrics = [font.metrics() for x, text, font, sup in self.line]
         max_ascent = max([metric["ascent"] for metric in metrics])
         baseline = self.cursor_y + 1.25 * max_ascent
 
-        base_font = item.font
-        for item in self.line:
-            if item.sup:
-                sup_font = base_font.copy()
-                sup_font.config(size=base_font.cget("size") // 2)
-                #sup_font = get_font(item.font.cget("size") // 2, item.font.cget("weight"), item.font.cget("slant"))
+        for x, text, font, sup in self.line:
+            if sup:
                 y = baseline - max_ascent
-                self.display_list.append((item.x + shift, y, item.text, sup_font))
             else:
-                y = baseline - item.font.metrics("ascent")
-                self.display_list.append((item.x + shift, y, item.text, item.font))
+                y = baseline - font.metrics("ascent")
+            self.display_list.append((x + shift, y, text, font))
         
         self.cursor_x = HSTEP
         self.line = []
@@ -210,18 +200,62 @@ class Layout:
                 self.superscript = True
             elif tok.tag.startswith("/sup"):
                 self.superscript = False
+            elif tok.tag.startswith("abbr"):
+                self.small_cap = True
+            elif tok.tag.startswith("/abbr"):
+                self.small_cap = False
     
     def text(self, token):
-        font = get_font(self.size, self.weight, self.style)
+        if self.superscript:
+            size = self.size // 2
+        else:
+            size = self.size
+        font = get_font(size, self.weight, self.style)
         text = token.text
         for word in text.split():
-            w = font.measure(word)
-            if self.cursor_x + w > WIDTH - HSTEP:
-                self.cursor_y += font.metrics("linespace") * 1.25
-                self.cursor_x = HSTEP
-                self.flush()
-            self.line.append(LineItem(self.cursor_x, word, font, self.superscript))
-            self.cursor_x += w + font.measure(" ")
+            if self.small_cap:
+                for i in re.split(r"([a-z]+)", word):
+                    if not i:
+                        continue
+                    if i[0].islower():
+                        i = i.upper()
+                        font = get_font(self.size // 2, "bold", self.style)
+                    else:
+                        font = get_font(self.size, self.weight, self.style)
+                    w = font.measure(i)
+                    
+                    self.line.append((self.cursor_x, i, font, self.superscript))
+
+                    if self.cursor_x + w > WIDTH - HSTEP:
+                        self.cursor_y += font.metrics("linespace") * 1.25
+                        self.cursor_x = HSTEP
+                        self.flush()
+                    self.cursor_x += w
+                if word.split():
+                    self.cursor_x += font.measure(" ")
+            else:
+                w = font.measure(word)
+                if self.cursor_x + w > WIDTH - HSTEP:
+                    if '\N{soft hyphen}' in word:
+                        word = word.replace('\N{soft hyphen}', '\n')
+                        hws = word.split('\n')
+                        hsent = ""
+                        
+                        for hw in hws:
+                            if self.cursor_x + font.measure(hsent + hw + "-") > WIDTH - HSTEP:
+                                self.line.append((self.cursor_x, hsent + "-", font, self.superscript))
+                                self.flush()
+                                hsent = ""
+                            hsent += hw
+                        
+                        if hsent:
+                            self.line.append((self.cursor_x, hsent, font, self.superscript))
+                            self.cursor_x += font.measure(hsent + " ")
+                    else:
+                        self.flush()
+                else:
+                    self.line.append((self.cursor_x, word, font, self.superscript))
+                    self.cursor_x += w + font.measure(" ")
 
 def get_font(size, weight, slant):
     key = (size, weight, slant)
