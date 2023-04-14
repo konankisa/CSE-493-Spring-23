@@ -232,7 +232,8 @@ class Layout:
                         self.flush()
                     self.cursor_x += w
                 if word.split():
-                    self.cursor_x += font.measure(" ")
+                    big_font = get_font(self.size, self.weight, self.style)
+                    self.cursor_x += big_font.measure(" ")
             else:
                 w = font.measure(word)
                 if self.cursor_x + w > WIDTH - HSTEP:
