@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import socket
 import ssl
@@ -12,6 +12,7 @@ WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 100
 FONTS = {}
+example_str = "<html><body><h1>Hello World</h1> <p>I love HTML</p></body></html>"
 
 def request(url, headers=None, redirects=0):
     # if too many redirects, raise an exception
@@ -107,6 +108,58 @@ def request(url, headers=None, redirects=0):
             cached_urls[init_url] = (cur_time, cur_headers, body)
 
     return cur_headers, body
+
+# Element and Text classes for the HTML document tree
+@dataclass
+class Element:
+    tag: str
+    children: List["Node"]
+
+@dataclass
+class Text:
+    text: str
+    children = List["Node"] = field(default_factory=list)
+
+Node = Union[Element, Text]
+
+class HTMLParser:
+    def __init__(self, body):
+        self.body = body
+        self.unfinished = []
+    
+    def parse(self) -> Node:
+        text = ""
+        tag = False
+        for c in self.body:
+            if c == "<":
+                tag = True
+                if text: self.add_text(text)
+                text = ""
+            elif c == ">":
+                tag = False
+                self.add_tag(text)
+                text = ""
+            else:
+                text += c
+        if not tag and text:
+            self.add_text(text)
+        return self.finish()
+
+    def add_text(self, text):
+        self.unfinished[-1].children.append(Text(text))
+
+    def add_tag(self, tag):
+        if tag[0] != "/":
+            self.unfinished.append(Element(tag, []))
+        else:
+            if len(self.unfinished) == 1:
+                return
+            popped = self.unfinished.pop()
+            self.unfinished[-1].children.append(popped)
+
+    def finish(self) -> Node:
+        assert not self.unfinished
+        return self.unfinished[0]
 
 @dataclass
 class Text:
