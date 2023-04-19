@@ -150,8 +150,24 @@ class HTMLParser:
     def parse(self) -> Node:
         text = ""
         tag = False
-        for c in self.body:
-            if c == "<":
+        comment = False
+        i = 0
+        while i < len(self.body):
+            c = self.body[i]
+            if not comment and self.body[i:i+4] == "<!--":
+                if text: self.add_text(text)
+                text = ""
+                comment = True
+                i += 4
+                continue
+            elif comment and self.body[i:i+3] == "-->":
+                comment = False
+                i += 3
+                continue
+            elif comment:
+                i += 1
+                continue
+            elif c == "<":
                 tag = True
                 if text: self.add_text(text)
                 text = ""
@@ -161,6 +177,7 @@ class HTMLParser:
                 text = ""
             else:
                 text += c
+            i += 1
         if not tag and text:
             self.add_text(text)
         return self.finish()
@@ -203,9 +220,24 @@ class HTMLParser:
             parent.children.append(node)
         else:
             parent = self.unfinished[-1] if self.unfinished else None
+            if tag == "p" and self.open_p():
+                closed_tags = []
+                while True:
+                    cur_node = self.unfinished.pop()
+                    parent = self.unfinished[-1]
+                    parent.children.append(popped)
+                    if isinstance(cur_node, Element) and cur_node.tag == "p":
+                        break
+                self.add_tag("/p")
             node = Element(tag, parent, attributes)
             self.unfinished.append(node)
     
+    def open_p(self):
+        for node in reversed(self.unfinished):
+            if isinstance(node, Element) and node.tag == "p":
+                return False
+        return False
+
     def get_attributes(self, text):
         parts = text.split()
         tag = parts[0].lower()
