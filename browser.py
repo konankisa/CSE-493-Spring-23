@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
 import socket
 import ssl
@@ -6,6 +6,7 @@ import time
 import tkinter
 import tkinter.font
 from typing import List, Union
+import sys
 
 cached_urls = {}
 WIDTH, HEIGHT = 800, 600
@@ -152,9 +153,15 @@ class HTMLParser:
         text = ""
         tag = False
         comment = False
+        open_quote = None
         i = 0
         while i < len(self.body):
             c = self.body[i]
+            if tag and (c == "\"" or c == "'"):
+                if open_quote == c:
+                    open_quote = None
+                elif not open_quote:
+                    open_quote = c
             if not comment and self.body[i:i+4] == "<!--":
                 if text: self.add_text(text)
                 text = ""
@@ -168,7 +175,7 @@ class HTMLParser:
             elif comment:
                 i += 1
                 continue
-            elif c == "<":
+            elif c == "<" and not open_quote:
                 if self.in_script:
                     if self.body[i:i+9] == "</script>":
                         self.in_script = False
@@ -180,7 +187,7 @@ class HTMLParser:
                 tag = True
                 if text: self.add_text(text)
                 text = ""
-            elif c == ">":
+            elif c == ">" and not open_quote:
                 if self.in_script:
                     text += c
                     i += 1
