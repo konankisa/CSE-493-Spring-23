@@ -22,6 +22,14 @@ HEAD_TAGS = [
     "base", "basefont", "bgsound", "noscript",
     "link", "meta", "title", "style", "script",
 ]
+BLOCK_ELEMENTS = [
+    "html", "body", "article", "section", "nav", "aside",
+    "h1", "h2", "h3", "h4", "h5", "h6", "hgroup", "header",
+    "footer", "address", "p", "hr", "pre", "blockquote",
+    "ol", "ul", "menu", "li", "dl", "dt", "dd", "figure",
+    "figcaption", "main", "div", "table", "form", "fieldset",
+    "legend", "details", "summary"
+]
 
 def request(url, headers=None, redirects=0):
     # if too many redirects, raise an exception
@@ -330,21 +338,91 @@ class Tag:
 
 Token = Union[TokText, Tag]
 
-class Layout:
-    def __init__(self, tree):
-        self.display_list = []
-        self.line = []
-        self.cursor_x = HSTEP
-        self.cursor_y = VSTEP
-        self.weight = "normal"
-        self.style = "roman"
-        self.centered = False
-        self.superscript = False
-        self.small_cap = False
-        self.size = 16
-        self.recurse(tree)
-        self.flush()
+class DocumentLayout:
+    def __init__(self, node):
+        self.node = node
+        self.parent = None
+        self.children = []
+        
     
+    def layout(self):
+        child = BlockLayout(self.node, self, None)
+        self.children.append(child)
+        child.layout()
+        self.display_list = child.display_list
+        self.width = WIDTH - 2*HSTEP
+        self.x = HSTEP
+        self.y = VSTEP
+        child.layout()
+        self.height = child.height + 2*VSTEP
+
+class BlockLayout:
+    def __init__(self, node, parent, previous):
+        self.node = node
+        self.parent = parent
+        self.previous = previous
+        self.children = []
+    
+    def layout(self):
+        mode = self.layout_mode(self.node)
+        self.display_list = []
+        self.x = self.parent.x
+        if self.previous:
+            self.y = self.previous.y + self.previous.height
+        else:
+            self.y = self.parent.y
+        self.width = self.parent.width
+        if mode == "block":
+            self.height = sum(child.height for child in self.children)
+            previous = None
+            for child in self.node.children:
+                next = BlockLayout(child, self, previous)
+                self.children.append(next)
+                previous = next
+            for child in self.children:
+                child.layout()
+            for child in self.children:
+                self.display_list.extend(child.display_list)
+        else:
+            assert mode == "inline"
+
+            self.display_list = []
+            self.line = []
+
+            self.cursor_x = 0
+            self.cursor_y = 0
+            self.weight = "normal"
+            self.style = "roman"
+            self.height = self.cursor_y
+
+            self.centered = False
+            self.superscript = False
+            self.small_cap = False
+            self.size = 16
+
+            self.recurse(self.node)
+            self.flush()
+    
+    def layout_intermediate(self):
+        previous = None
+        for child in self.node.children:
+            next = BlockLayout(child, self, previous)
+            self.children.append(next)
+            previous = next
+    
+    def layout_mode(self, node):
+        if isinstance(node, Text):
+            return "inline"
+        elif node.children:
+            if any(isinstance(child, Element) and \
+                    child.tag in BLOCK_ELEMENTS
+                    for child in node.children):
+                return "block"
+            else:
+                return "inline"
+        else:
+            return "block"
+
     def open_tag(self, tag):
         if tag == "i":
             self.style = "italic"
@@ -409,20 +487,20 @@ class Layout:
                 y = baseline - max_ascent
             else:
                 y = baseline - font.metrics("ascent")
-            self.display_list.append((x + shift, y, text, font))
+            self.display_list.append((x + shift + self.x, y + self.y, text, font))
         
-        self.cursor_x = HSTEP
+        self.cursor_x = 0
         self.line = []
         max_descent = max([metric["descent"] for metric in metrics])
         self.cursor_y = baseline + 1.25 * max_descent
     
-    def text(self, token):
+    def text(self, node):
         if self.superscript:
             size = self.size // 2
         else:
             size = self.size
         font = get_font(size, self.weight, self.style)
-        text = token.text
+        text = node.text
         for word in text.split():
             if self.small_cap:
                 for i in re.split(r"([a-z]+)", word):
@@ -437,7 +515,7 @@ class Layout:
                     
                     self.line.append((self.cursor_x, i, font, self.superscript))
 
-                    if self.cursor_x + w > WIDTH - HSTEP:
+                    if self.cursor_x + w > self.width:
                         self.cursor_y += font.metrics("linespace") * 1.25
                         self.cursor_x = HSTEP
                         self.flush()
@@ -530,8 +608,7 @@ class Browser:
         VSTEP *= 2
         HSTEP *= 2
         self.font_size *= 2
-        layout = Layout(self.nodes)
-        self.display_list = layout.display_list
+        self.display_list = self.document.display_list
         self.draw()
     
     def zoomout(self, ev):
@@ -539,14 +616,14 @@ class Browser:
         VSTEP //= 2
         HSTEP //= 2
         self.font_size //= 2
-        self.display_list = Layout(self.nodes).display_list
+        self.display_list = self.document.display_list
         self.draw()
     
     def resize(self, ev):
         global WIDTH, HEIGHT
         WIDTH = ev.width
         HEIGHT = ev.height
-        self.display_list = Layout(self.nodes).display_list
+        self.display_list = self.document.display_list
         self.draw()
     
     def draw(self):
@@ -560,12 +637,17 @@ class Browser:
         # load url and print body
         headers, body = request(url)
         self.nodes = HTMLParser(body).parse()
-        self.display_list = Layout(self.nodes).display_list
+        self.document = BlockLayout(self.nodes, None, None)
+        self.document.layout()
+        self.display_list = self.document.display_list
         self.draw()
+
+
 def print_tree(node, indent=0):
     print(" " * indent, node)
     for child in node.children:
         print_tree(child, indent + 2)
+
 if __name__ == "__main__":
     import sys
     Browser().load(sys.argv[1])
