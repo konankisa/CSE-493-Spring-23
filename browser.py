@@ -146,6 +146,7 @@ class HTMLParser:
     def __init__(self, body):
         self.body = body
         self.unfinished = []
+        self.in_script = False
     
     def parse(self) -> Node:
         text = ""
@@ -168,10 +169,22 @@ class HTMLParser:
                 i += 1
                 continue
             elif c == "<":
+                if self.in_script:
+                    if self.body[i:i+9] == "</script>":
+                        self.in_script = False
+                        i += 9
+                    else:
+                        text += c
+                        i += 1
+                    continue
                 tag = True
                 if text: self.add_text(text)
                 text = ""
             elif c == ">":
+                if self.in_script:
+                    text += c
+                    i += 1
+                    continue
                 tag = False
                 self.add_tag(text)
                 text = ""
@@ -190,6 +203,8 @@ class HTMLParser:
             elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
                 if tag in HEAD_TAGS:
                     self.add_tag("head")
+                    if tag == "script":
+                        self.in_script = True
                 else:
                     self.add_tag("body")
             elif open_tags == ["html", "head"] and tag not in ["/head"] + HEAD_TAGS:
@@ -222,28 +237,59 @@ class HTMLParser:
             parent = self.unfinished[-1] if self.unfinished else None
             if tag == "p" and self.open_p():
                 closed_tags = []
-                while True:
-                    cur_node = self.unfinished.pop()
-                    parent = self.unfinished[-1]
-                    parent.children.append(popped)
-                    if isinstance(cur_node, Element) and cur_node.tag == "p":
-                        break
+                while self.unfinished[-1].tag != "p":
+                    cur_node = self.unfinished[-1]
+                    self.add_tag("/" + cur_node.tag)
+                    closed_tags.append(cur_node.tag)
                 self.add_tag("/p")
-            node = Element(tag, parent, attributes)
-            self.unfinished.append(node)
+                self.add_tag("p")
+                for tag in reversed(closed_tags):
+                    self.add_tag(tag)
+            else:
+                node = Element(tag, parent, attributes)
+                self.unfinished.append(node)
     
     def open_p(self):
         for node in reversed(self.unfinished):
             if isinstance(node, Element) and node.tag == "p":
-                return False
+                return True
         return False
 
     def get_attributes(self, text):
-        parts = text.split()
+        parts = text.split(" ", 1)
         tag = parts[0].lower()
+        attrs = []
+        if len(parts) > 1:
+
+            text = ""
+            open_quote = None
+
+            for c in parts[1]:
+                if c == ' ' and not open_quote:
+                    attrs.append(text)
+                    text = ""
+                elif c == open_quote:
+                    attrs.append(text)
+                    text = ""
+                elif (c == "'" or c == '"') and not open_quote:
+                    open_quote = c
+                else:
+                    text += c
+
+            if text:
+                attrs.append(text)
+
         attributes = {}
-        for attrpair in parts[1:]:
-            if "=" in attrpair:
+
+        for attrpair in attrs:
+            if attrpair.startswith("="):
+                if "=" in attrpair[1:]:
+                    key, value = attrpair[1:].split("=", 1)
+                else:
+                    key, value = attrpair[1:], ""
+                key = "=" + key
+                attributes[key.lower()] = value
+            elif "=" in attrpair:
                 key, value = attrpair.split("=", 1)
                 if len(value) > 2 and value[0] in ["'", "\""]:
                     value = value[1:-1]
