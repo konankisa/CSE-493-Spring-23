@@ -337,14 +337,6 @@ class Tag:
         return "Tag('{}')".format(self.tag)
 
 Token = Union[TokText, Tag]
-BLOCK_ELEMENTS = [
-    "html", "body", "article", "section", "nav", "aside",
-    "h1", "h2", "h3", "h4", "h5", "h6", "hgroup", "header",
-    "footer", "address", "p", "hr", "pre", "blockquote",
-    "ol", "ul", "menu", "li", "dl", "dt", "dd", "figure",
-    "figcaption", "main", "div", "table", "form", "fieldset",
-    "legend", "details", "summary"
-]
 
 def layout_mode(node):
     if isinstance(node, Text):
@@ -390,6 +382,9 @@ class BlockLayout:
                 self.children.append(next)
                 previous = next
         else:
+            if isinstance(self.node, Element) and self.node.tag == "li":
+                self.x += 2 * HSTEP
+                self.width -= 2 * HSTEP
             self.display_list = []
 
             self.cursor_x = 0
@@ -469,10 +464,24 @@ class BlockLayout:
         self.cursor_y = baseline + 1.25 * max_descent
 
     def paint(self, display_list):
+        if isinstance(self.node, Element) and self.node.tag == "nav" and "links" == self.node.attributes.get("class", ""):
+            x2, y2 = self.x + self.width, self.y + self.height
+            rect = DrawRect(self.x, self.y, x2, y2, "lightgray")
+            display_list.append(rect)
+        
         if isinstance(self.node, Element) and self.node.tag == "pre":
             x2, y2 = self.x + self.width, self.y + self.height
             rect = DrawRect(self.x, self.y, x2, y2, "gray")
             display_list.append(rect)
+
+        if layout_mode(self.node) == "inline":
+            if isinstance(self.node, Element) and self.node.tag == "li":
+                x1 = self.x - HSTEP - 2
+                x2 = x1 + 4
+                y1 = self.y + self.display_list[0][3].metrics("linespace") / 2
+                y2 = y1 + 4
+                rect = DrawRect(x1, y1, x2, y2, "black")
+                display_list.append(rect)
 
         if layout_mode(self.node) == "inline":
             for x, y, word, font in self.display_list:
@@ -589,6 +598,8 @@ class Browser:
 
         self.scroll = 0
         self.window.bind("<Down>", self.scrolldown)
+        self.window.bind("<Up>", self.scrollup)
+        self.window.bind("<MouseWheel>", self.scrolling)
         self.display_list = []
 
     def load(self, url):
@@ -606,11 +617,39 @@ class Browser:
             if cmd.top > self.scroll + HEIGHT: continue
             if cmd.bottom < self.scroll: continue
             cmd.execute(self.scroll, self.canvas)
+        
+        if (self.document.height >= HEIGHT):
+            x1 = WIDTH - 8
+            x2 = WIDTH
+            doc_height = self.document.height
+            screen_height = HEIGHT
+
+            scroll_height = screen_height * screen_height / doc_height
+
+            y1 = self.scroll * screen_height / doc_height
+            y2 = y1 + scroll_height
+            color = "blue"
+
+            scroll_bar = DrawRect(x1, y1, x2, y2, color)
+            scroll_bar.execute(0, self.canvas)
 
     def scrolldown(self, e):
         max_y = self.document.height - HEIGHT
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         self.draw()
+
+    def scrollup(self, ev):
+        self.scroll -= SCROLL_STEP
+        if self.scroll < 0:
+            self.scroll = 0
+        self.draw()
+    
+    def scrolling(self, ev):
+        if ev.delta > 0:
+            self.scrollup(ev)
+        else:
+            self.scrolldown(ev)
+
 
 def print_tree(node, indent=0):
     print(" " * indent, node)
