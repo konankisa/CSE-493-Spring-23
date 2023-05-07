@@ -427,6 +427,15 @@ class CSSParser:
         self.whitespace()
         self.literal(":")
         self.whitespace()
+        if prop == "font":
+            style = self.word()
+            self.whitespace()
+            weight = self.word()
+            self.whitespace()
+            size = self.word()
+            self.whitespace()
+            family = self.word()
+            return "font", (style, weight, size, family)
         val = self.word()
         return prop.lower(), val
 
@@ -442,7 +451,14 @@ class CSSParser:
         while self.i < len(self.s) and self.s[self.i] != "}":
             try:
                 prop, val = self.pair()
-                pairs[prop.lower()] = val
+                if prop == "font":
+                    style, weight, size, family = val
+                    pairs["font-family"] = family
+                    pairs["font-size"] = size
+                    pairs["font-style"] = style
+                    pairs["font-weight"] = weight
+                else:
+                    pairs[prop.lower()] = val
                 self.whitespace()
                 self.literal(";")
                 self.whitespace()
@@ -456,11 +472,18 @@ class CSSParser:
         return pairs
 
     def selector(self):
-        out = TagSelector(self.word().lower())
+        word = self.word()
+        if word.startswith("."):
+            out = ClassSelector(word[1:].lower())
+        else:
+            out = TagSelector(word.lower())
         self.whitespace()
         while self.i < len(self.s) and self.s[self.i] != "{":
             tag = self.word()
-            descendant = TagSelector(tag.lower())
+            if tag[0] == ".":
+                descendant = ClassSelector(tag[1:].lower())
+            else:
+                descendant = TagSelector(tag.lower())
             out = DescendantSelector(out, descendant)
             self.whitespace()
         return out
@@ -514,11 +537,25 @@ class DescendantSelector:
         return ("DescendantSelector(ancestor={}, descendant={}, priority={})") \
             .format(self.ancestor, self.descendant, self.priority)
 
+class ClassSelector:
+    def __init__(self, cls):
+        self.cls = cls
+        self.priority = 10
+
+    def matches(self, node):
+        class_attr = node.attributes.get("class", "").split()
+        return self.cls in class_attr if isinstance(node, Element) else False
+
+    def __repr__(self):
+        return "ClassSelector(html_class={}, priority={})".format(
+            self.cls, self.priority)
+
 INHERITED_PROPERTIES = {
     "font-size": "16px",
     "font-style": "normal",
     "font-weight": "normal",
     "color": "black",
+    "font-family": "Times",
 }
 
 def compute_style(node, property, value):
@@ -535,6 +572,12 @@ def compute_style(node, property, value):
             return str(node_pct * parent_px) + "px"
         else:
             return None
+    elif property in ["width", "height"]:
+        if value.endswith("px"):
+            if value[0] == "-": return "auto"
+            return value[:-2] # only return the pixels
+        else:
+            return value # keyword auto
     else:
         return value
 
@@ -573,13 +616,14 @@ class BlockLayout:
         self.display_list = []
 
     def layout(self):
-        self.width = self.parent.width
         self.x = self.parent.x
 
         if self.previous:
             self.y = self.previous.y + self.previous.height
         else:
             self.y = self.parent.y
+        
+        self.width = self.parent.width if self.node.style.get("width", "auto") == "auto" else float(self.node.style.get("width", "auto"))
 
         mode = layout_mode(self.node)
         if mode == "block":
@@ -604,11 +648,14 @@ class BlockLayout:
 
         for child in self.children:
             child.layout()
-
-        if mode == "block":
-            self.height = sum([child.height for child in self.children])
+        
+        if self.node.style.get("height", "auto") == "auto":
+            if mode == "block":
+                self.height = sum([child.height for child in self.children])
+            else:
+                self.height = self.cursor_y
         else:
-            self.height = self.cursor_y
+            self.height = float(self.node.style.get("height", "auto"))
 
     def recurse(self, node):
         if isinstance(node, Text):
@@ -622,9 +669,10 @@ class BlockLayout:
     def get_font(self, node):
         weight = node.style["font-weight"]
         style = node.style["font-style"]
+        family = node.style["font-family"]
         if style == "normal": style = "roman"
         size = int(float(node.style["font-size"][:-2]) * .75)
-        return get_font(size, weight, style)
+        return get_font(size, weight, style, family)
 
     def text(self, node):
         color = node.style["color"]
@@ -711,7 +759,8 @@ class DrawText:
         )
 
     def __repr__(self):
-        return "DrawText(text={})".format(self.text)
+        return "DrawText(top={} left={} bottom={} text={} font={})".format(self.top,
+                                    self.left, self.bottom, self.text, self.font)
 
 class DrawRect:
     def __init__(self, x1, y1, x2, y2, color):
@@ -733,10 +782,10 @@ class DrawRect:
         return "DrawRect(top={} left={} bottom={} right={} color={})".format(
             self.top, self.left, self.bottom, self.right, self.color)
 
-def get_font(size, weight, slant):
-    key = (size, weight, slant)
+def get_font(size, weight, slant, family):
+    key = (size, weight, slant, family)
     if key not in FONTS:
-        font = tkinter.font.Font(size=size, weight=weight, slant=slant)
+        font = tkinter.font.Font(size=size, weight=weight, slant=slant, family=family)
         FONTS[key] = font
     return FONTS[key]
 
@@ -777,7 +826,7 @@ class Browser:
         self.window.bind("<MouseWheel>", self.scrolling)
         self.display_list = []
 
-        with open("browser6.css") as f:
+        with open("browser.css") as f:
             self.default_style_sheet = CSSParser(f.read()).parse()
 
     def load(self, url):
