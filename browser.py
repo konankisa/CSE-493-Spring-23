@@ -14,6 +14,7 @@ HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 100
 CHROME_PX = 100
 FONTS = {}
+BOOKMARKS = []
 example_str = "<html><body><h1>Hello World</h1> <p>I love HTML</p></body></html>"
 SELF_CLOSING_TAGS = [
     "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -41,6 +42,12 @@ def request(url, headers=None, redirects=0):
     if init_url in cached_urls:
         if cached_urls[init_url][0] > time.time():
             return cached_urls[init_url][1], cached_urls[init_url][2]
+    
+    if url == "about:bookmarks":
+        html = "<!doctype html>\n"
+        for bookmark in BOOKMARKS:
+            html += "<a href=\"{}\">{}</a><br>\n".format(bookmark, bookmark)
+        return {}, html
 
     # split url and check for scheme
     scheme, url = url.split("://", 1)
@@ -887,14 +894,19 @@ def lex(body) -> List[Token]:
     return tokens
 
 class Tab:
-    def __init__(self):
+    def __init__(self, browser):
         with open("browser.css") as f:
             self.default_style_sheet = CSSParser(f.read()).parse()
         self.history = []
         self.active_tab = None
+        self.browser = browser
     
     def load(self, url):
-        headers, body = request(url)
+        frag = url
+        if "#" in url:
+            frag, frag2 = url.split("#", 1)
+        
+        headers, body = request(frag)
         self.scroll = 0
         self.url = url
         self.history.append(url)
@@ -917,6 +929,16 @@ class Tab:
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
+
+        if "#" in url:
+            node_list = []
+            tree_to_list(self.document, node_list)
+            for node in node_list:
+                if isinstance(node, BlockLayout) and isinstance(node.node, Element) \
+                        and node.node.attributes.get("id") == frag2:
+                    self.scroll = node.y
+                    break
+
         self.display_list = []
         self.document.paint(self.display_list)
     
@@ -946,7 +968,7 @@ class Tab:
             color = "blue"
 
             scroll_bar = DrawRect(x1, y1, x2, y2, color)
-            scroll_bar.execute(0, self.canvas)
+            scroll_bar.execute(0, canvas)
 
     def scrolldown(self):
         max_y = self.document.height - (HEIGHT - CHROME_PX)
@@ -959,11 +981,11 @@ class Tab:
     
     def scrolling(self, ev):
         if ev.delta > 0:
-            self.scrollup(ev)
+            self.scrollup()
         else:
-            self.scrolldown(ev)
+            self.scrolldown()
     
-    def click(self, x, y):
+    def click(self, x, y, button=1):
         x, y = x, y + self.scroll
 
         objs = [obj for obj in tree_to_list(self.document, [])
@@ -977,8 +999,26 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
-                self.load(resolve_url(elt.attributes["href"], self.url))
-                return
+                if elt.attributes["href"][0] == "#":
+                    node_list = []
+                    tree_to_list(self.document, node_list)
+                    for node in node_list:
+                        if isinstance(node, BlockLayout) and isinstance(node.node, Element) \
+                                and node.node.attributes.get("id") == elt.attributes["href"][1:]:
+                            self.scroll = node.y
+                            break
+                    
+                    frag = self.url
+                    if "#" in self.url:
+                        frag, frag2 = self.url.split("#", 1)
+                    self.url = frag + elt.attributes["href"]
+                    return
+                
+                url = resolve_url(elt.attributes["href"], self.url)
+                if button == 1:
+                    return self.load(url)
+                else:
+                    return self.browser.load(url, activate=False)
             elt = elt.parent
     
     def __repr__(self) -> str:
@@ -1000,17 +1040,20 @@ class Browser:
         self.window.bind("<Up>", self.handle_up)
         self.window.bind("<MouseWheel>", self.handle_scroll)
         self.window.bind("<Button-1>", self.handle_click)
+        self.window.bind("<Button-2>", self.handle_middle_click)
         self.window.bind("<Key>", self.handle_key)
         self.window.bind("<Return>", self.handle_enter)
+        self.window.bind("<BackSpace>", self.handle_backspace)
         self.tabs = []
         self.active_tab = None
         self.focus = None
         self.address_bar = ""
     
-    def load(self, url):
-        new_tab = Tab()
+    def load(self, url, activate=True):
+        new_tab = Tab(self)
         new_tab.load(url)
-        self.active_tab = len(self.tabs)
+        if activate:
+            self.active_tab = len(self.tabs)
         self.tabs.append(new_tab)
         self.draw()
     
@@ -1036,15 +1079,22 @@ class Browser:
             outline="black", width=1)
         self.canvas.create_text(11, 0, anchor="nw", text="+",
             font=buttonfont, fill="black")
-        self.canvas.create_rectangle(40, 50, WIDTH - 10, 90,
-            outline="black", width=1)
-        url = self.tabs[self.active_tab].url
-        self.canvas.create_text(55, 55, anchor='nw', text=url,
-            font=buttonfont, fill="black")
+        
         self.canvas.create_rectangle(10, 50, 35, 90,
             outline="black", width=1)
         self.canvas.create_polygon(
             15, 70, 30, 55, 30, 85, fill='black')
+        
+        
+        if self.tabs[self.active_tab].url in BOOKMARKS:
+            color = "yellow"
+        else:
+            color = "white"
+        self.canvas.create_rectangle(WIDTH - 35, 50, WIDTH - 10, 90,
+            outline="black", fill=color, width=1)
+
+        self.canvas.create_rectangle(40, 50, WIDTH - 40, 90,
+            outline="black", width=1)
         if self.focus == "address bar":
             self.canvas.create_text(
                 55, 55, anchor='nw', text=self.address_bar,
@@ -1091,12 +1141,27 @@ class Browser:
                 self.load("https://browser.engineering/")
             elif 10 <= e.x < 35 and 50 <= e.y < 90:
                 self.tabs[self.active_tab].go_back()
-            elif 50 <= e.x < WIDTH - 10 and 50 <= e.y < 90:
+            elif 50 <= e.x < WIDTH - 40 and 50 <= e.y < 90:
                 self.focus = "address bar"
                 self.address_bar = ""
+            elif WIDTH - 35 <= e.x < WIDTH - 10 and 50 <= e.y < 90:
+                url = self.tabs[self.active_tab].url
+                if url not in BOOKMARKS:
+                    BOOKMARKS.append(url)
+                else:
+                    BOOKMARKS.remove(url)
         else:
             self.tabs[self.active_tab].click(e.x, e.y - CHROME_PX)
         self.draw()
+    
+    def handle_backspace(self, e):
+        if self.focus == "address bar":
+            self.address_bar = self.address_bar[:-1]
+        self.draw()
+    
+    def handle_middle_click(self, e):
+        if e.y >= CHROME_PX:
+            self.tabs[self.active_tab].click(e.x, e.y - CHROME_PX, button=2)
 
 def print_tree(node, indent=0):
     print(" " * indent, node)
