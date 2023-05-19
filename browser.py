@@ -15,6 +15,7 @@ HSTEP, VSTEP = 13, 18
 SCROLL_STEP = 100
 CHROME_PX = 100
 INPUT_WIDTH_PX = 200
+CHECK_SIZE = 16
 FONTS = {}
 BOOKMARKS = []
 example_str = "<html><body><h1>Hello World</h1> <p>I love HTML</p></body></html>"
@@ -158,12 +159,6 @@ def resolve_url(url, current):
             if dir.count("/") == 2: continue
             dir, _ = dir.rsplit("/", 1)
         return dir + "/" + url
-
-def tree_to_list(tree, list):
-    list.append(tree)
-    for child in tree.children:
-        tree_to_list(child, list)
-    return list
 
 # Element and Text classes for the HTML document tree
 class Element:
@@ -561,8 +556,7 @@ class ClassSelector:
         self.priority = 10
 
     def matches(self, node):
-        class_attr = node.attributes.get("class", "").split()
-        return self.cls in class_attr if isinstance(node, Element) else False
+        return self.cls in node.attributes.get("class", "") if isinstance(node, Element) else False
 
     def __repr__(self):
         return "ClassSelector(html_class={}, priority={})".format(
@@ -873,15 +867,18 @@ class InputLayout:
         size = int(float(self.node.style["font-size"][:-2]) * .75)
         self.font = get_font(size, weight, style)
 
-        self.width = INPUT_WIDTH_PX
+        if self.node.attributes.get("type", "") == "checkbox":
+            self.width = CHECK_SIZE
+            self.height = CHECK_SIZE
+        else:
+            self.width = INPUT_WIDTH_PX
+            self.height = self.font.metrics("linespace")
 
         if self.previous:
             space = self.previous.font.measure(" ")
             self.x = self.previous.x + space + self.previous.width
         else:
             self.x = self.parent.x
-
-        self.height = self.font.metrics("linespace")
     
     def paint(self, display_list):
         bgcolor = self.node.style.get("background-color",
@@ -891,7 +888,13 @@ class InputLayout:
             rect = DrawRect(self.x, self.y, x2, y2, bgcolor)
             display_list.append(rect)
         if self.node.tag == "input":
-            text = self.node.attributes.get("value", "")
+            if self.node.attributes.get("type", "") == "checkbox":
+                if "checked" in self.node.attributes:
+                    text = "x"
+                else:
+                    text = ""
+            else:
+                text = self.node.attributes.get("value", "")
         elif self.node.tag == "button":
             if len(self.node.children) == 1 and \
                isinstance(self.node.children[0], Text):
@@ -1074,14 +1077,23 @@ class Tab:
         body = ""
         for input in inputs:
             name = input.attributes["name"]
-            value = input.attributes.get("value", "")
+            if input.attributes.get("type", "") == "checkbox":
+                if "checked" not in input.attributes:
+                    continue
+                else:
+                    value = input.attributes.get("value", "on")
+            else:
+                value = input.attributes.get("value", "")
             name = urllib.parse.quote(name)
             value = urllib.parse.quote(value)
             body += "&" + name + "=" + value
-        body = body [1:]
+        body = body[1:]
 
         url = resolve_url(elt.attributes["action"], self.url)
-        self.load(url, body)
+        if elt.attributes.get("method", "GET") == "POST":
+            self.load(url, body)
+        else:
+            self.load(url + "?" + body)
 
     def scrolldown(self):
         max_y = self.document.height - (HEIGHT - CHROME_PX)
@@ -1098,6 +1110,36 @@ class Tab:
         else:
             self.scrolldown()
     
+    def keypress(self, char):
+        if self.focus:
+            self.focus.attributes["value"] += char
+            self.render()
+    
+    def enter(self):
+        if self.focus and self.focus.tag == "input":
+            curr = self.focus.parent
+            while curr:
+                if curr.tag == "form" and "action" in curr.attributes:
+                    return self.submit_form(curr)
+                curr = curr.parent
+
+    def tab(self):
+        if self.focus and self.focus.tag == "input":
+            curr = self.focus.parent
+            while curr:
+                if curr.tag == "form":
+                    break
+                curr = curr.parent
+            
+            child_list = tree_to_list(curr, [])
+            input_list = [node for node in child_list if isinstance(node, Element)
+                            and node.tag == "input"]
+            index = input_list.index(self.focus)
+            next_index = (index + 1) % len(input_list)
+            self.focus = input_list[next_index]
+            self.focus.attributes["value"] = ""
+            self.render()
+
     def click(self, x, y, button=1):
         x, y = x, y + self.scroll
 
@@ -1112,8 +1154,14 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "input":
-                self.focus = elt
-                elt.attributes["value"] = ""
+                if elt.attributes.get("type", "") == "checkbox":
+                    if "checked" in elt.attributes:
+                        del elt.attributes["checked"]
+                    else:
+                        elt.attributes["checked"] = ""
+                else:
+                    self.focus = elt
+                    elt.attributes["value"] = ""
                 return self.render()
             elif elt.tag == "button":
                 while elt:
@@ -1166,6 +1214,7 @@ class Browser:
         self.window.bind("<Key>", self.handle_key)
         self.window.bind("<Return>", self.handle_enter)
         self.window.bind("<BackSpace>", self.handle_backspace)
+        self.window.bind("<Tab>", self.handle_tab)
         self.tabs = []
         self.active_tab = None
         self.focus = None
@@ -1261,6 +1310,8 @@ class Browser:
             self.tabs[self.active_tab].load(self.address_bar)
             self.focus = None
             self.draw()
+        elif self.focus == "content":
+            self.tabs[self.active_tab].enter()
 
     def handle_click(self, e):
         if e.y < CHROME_PX:
@@ -1280,16 +1331,20 @@ class Browser:
                     BOOKMARKS.append(url)
                 else:
                     BOOKMARKS.remove(url)
+            self.draw()
         else:
             self.focus = "content"
             self.tabs[self.active_tab].click(e.x, e.y - CHROME_PX)
-        self.draw()
     
     def handle_backspace(self, e):
         if self.focus == "address bar":
             self.address_bar = self.address_bar[:-1]
         self.draw()
     
+    def handle_tab(self, e):
+        if self.focus == "content":
+            self.tabs[self.active_tab].tab()
+
     def handle_middle_click(self, e):
         if e.y >= CHROME_PX:
             self.tabs[self.active_tab].click(e.x, e.y - CHROME_PX, button=2)
