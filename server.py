@@ -35,6 +35,8 @@ def show_comments():
     out +=   "<p><input name=guest></p>"
     out +=   "<p><button>Sign the book!</button></p>"
     out += "</form>"
+    out += "<label></label>"
+    out += "<script src=/comment.js></script>"
     for entry in ENTRIES:
         out += "<p>" + entry + "</p>"
     return out
@@ -45,6 +47,9 @@ def do_request(method, url, headers, body):
     elif method == "POST" and url == "/add":
         params = form_decode(body)
         return "200 OK", add_entry(params)
+    elif method == "GET" and url == "/comment.js":
+        with open("comment.js") as f:
+            return "200 OK", f.read()
     else:
         return "404 Not Found", not_found(url, method)
 
@@ -85,3 +90,7 @@ if __name__ == "__main__":
         conx, addr = s.accept()
         handle_connection(conx)
 
+def add_entry(params):
+    if 'guest' in params and len(params['guest']) <= 100:
+        ENTRIES.append(params['guest'])
+    return show_comments()

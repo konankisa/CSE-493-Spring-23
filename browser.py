@@ -8,6 +8,7 @@ import tkinter.font
 from typing import List, Union
 import sys
 import urllib.parse
+import dukpy
 
 cached_urls = {}
 WIDTH, HEIGHT = 800, 600
@@ -19,6 +20,7 @@ CHECK_SIZE = 16
 FONTS = {}
 BOOKMARKS = []
 example_str = "<html><body><h1>Hello World</h1> <p>I love HTML</p></body></html>"
+EVENT_DISPATCH_CODE = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
 SELF_CLOSING_TAGS = [
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",
@@ -798,6 +800,10 @@ class LineLayout:
         
         for word in self.children:
             word.layout()
+        
+        if not self.children:
+            self.height = 0
+            return
 
         max_ascent = max([word.font.metrics("ascent")
                   for word in self.children])
@@ -981,6 +987,56 @@ def lex(body) -> List[Token]:
         tokens.append(TokText(text))
     return tokens
 
+class JSContext:
+    def __init__(self, tab):
+        self.tab = tab
+        self.interp = dukpy.JSInterpreter()
+        self.interp.export_function("log", print)
+        self.interp.export_function("querySelectorAll", self.query_selector_all)
+        self.interp.export_function("getAttribute", self.get_attribute)
+        self.interp.export_function("innerHTML_set", self.innerHTML_set)
+        self.node_to_handle = {}
+        self.handle_to_node = {}
+
+        with open("runtime.js") as f:
+            self.interp.evaljs(f.read())
+
+    def run(self, code):
+        return self.interp.evaljs(code)
+    
+    def query_selector_all(self, selector_text):
+        selector = CSSParser(selector_text).selector()
+        nodes = [node for node in tree_to_list(self.tab.nodes, [])
+                    if selector.matches(node)]
+        return [self.get_handle(node) for node in nodes]
+    
+    def get_handle(self, node):
+        if node in self.node_to_handle:
+            return self.node_to_handle[node]
+        handle = len(self.node_to_handle)
+        self.node_to_handle[node] = handle
+        self.handle_to_node[handle] = node
+        return handle
+
+    def get_attribute(self, handle, attr):
+        node = self.handle_to_node[handle]
+        return node.attributes.get(attr, None)
+    
+    def dispatch_event(self, type, elt):
+        handle = self.node_to_handle.get(elt, -1)
+        do_default = self.interp.evaljs(EVENT_DISPATCH_CODE, type=type, handle=handle)
+        return not do_default
+    
+    def innerHTML_set(self, handle, s):
+        doc = HTMLParser("<html><body>" + s + "</body></html>").parse()
+        new_nodes = doc.children[0].children
+        elt = self.handle_to_node[handle]
+        elt.children = new_nodes
+
+        for child in elt.children:
+            child.parent = elt
+        self.tab.render()
+
 class Tab:
     def __init__(self, browser):
         with open("browser.css") as f:
@@ -1001,7 +1057,7 @@ class Tab:
         self.history.append(url)
         self.nodes = HTMLParser(body).parse()
         self.rules = self.default_style_sheet.copy()
-
+        
         links = [node.attributes["href"]
                  for node in tree_to_list(self.nodes, [])
                  if isinstance(node, Element)
@@ -1014,6 +1070,19 @@ class Tab:
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
+
+        scripts = [node.attributes["src"] for node
+                   in tree_to_list(self.nodes, [])
+                   if isinstance(node, Element)
+                   and node.tag == "script"
+                   and "src" in node.attributes]
+        self.js = JSContext(self)
+        for script in scripts:
+            header, body = request(resolve_url(script, url))
+            try:
+                self.js.run(body)
+            except dukpy.JSRuntimeError as e:
+                print("Script", script, "crashed", e)
 
         if "#" in url:
             node_list = []
@@ -1070,6 +1139,7 @@ class Tab:
             canvas.create_line(x, y, x, y + obj.height)
     
     def submit_form(self, elt):
+        if self.js.dispatch_event("submit", elt): return
         inputs = [node for node in tree_to_list(elt, [])
                   if isinstance(node, Element)
                   and node.tag == "input"
@@ -1112,6 +1182,7 @@ class Tab:
     
     def keypress(self, char):
         if self.focus:
+            if self.js.dispatch_event("keydown", self.focus): return
             self.focus.attributes["value"] += char
             self.render()
     
@@ -1154,6 +1225,7 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "input":
+                if self.js.dispatch_event("click", elt): return
                 if elt.attributes.get("type", "") == "checkbox":
                     if "checked" in elt.attributes:
                         del elt.attributes["checked"]
@@ -1164,11 +1236,13 @@ class Tab:
                     elt.attributes["value"] = ""
                 return self.render()
             elif elt.tag == "button":
+                if self.js.dispatch_event("click", elt): return
                 while elt:
                     if elt.tag == "form" and "action" in elt.attributes:
                         return self.submit_form(elt)
                     elt = elt.parent
             elif elt.tag == "a" and "href" in elt.attributes:
+                if self.js.dispatch_event("click", elt): return
                 if elt.attributes["href"][0] == "#":
                     node_list = []
                     tree_to_list(self.document, node_list)
