@@ -995,6 +995,10 @@ class JSContext:
         self.interp.export_function("querySelectorAll", self.query_selector_all)
         self.interp.export_function("getAttribute", self.get_attribute)
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
+        self.interp.export_function("get_children", self.get_children)
+        self.interp.export_function("create_element", self.create_element)
+        self.interp.export_function("append_child", self.append_child)
+        self.interp.export_function("insert_before", self.insert_before)
         self.node_to_handle = {}
         self.handle_to_node = {}
 
@@ -1003,6 +1007,30 @@ class JSContext:
 
     def run(self, code):
         return self.interp.evaljs(code)
+    
+    def get_children(self, handle):
+        node = self.handle_to_node[handle]
+        children = [elt for elt in node.children if isinstance(elt, Element)]
+        return [self.get_handle(child) for child in children]
+    
+    def create_element(self, tag):
+        elt = Element(tag, {}, None)
+        return self.get_handle(elt)
+    
+    def append_child(self, parent_header, child_header):
+        parent = self.handle_to_node[parent]
+        child = self.handle_to_node[child]
+        child.parent = parent
+        parent.children.append(child)
+        self.tab.render()
+    
+    def insert_before(self, parent_handle, new_handle, ref_handle):
+        parent = self.handle_to_node[parent]
+        new_node = self.handle_to_node[new_handle]
+        ref_node = self.handle_to_node[ref_handle]
+        ref_index = parent.children.index[ref_node]
+        parent.children.insert(ref_index, new_node)
+        new_node.parent = parent
     
     def query_selector_all(self, selector_text):
         selector = CSSParser(selector_text).selector()

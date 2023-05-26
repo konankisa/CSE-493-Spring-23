@@ -9,15 +9,29 @@ console = {
 document = {
     querySelectorAll: function(s) {
         var handles = call_python('querySelectorAll', s);
-        return handles.map(function(h) {
-            return new Node(h);
-        });
+        return handleNodes(handles)
+    },
+    createElement: function(tag) {
+        var handle = call_python("create_element", tag)
+        return new Node(handle)
     }
+}
+
+function handleNodes(handles) {
+    return handles.map(function(h) {
+        return new Node(h);
+    });
 }
 
 Object.defineProperty(Node.prototype, 'innerHTML', {
     set: function(s) {
         call_python("innerHTML_set", this.handle, s.toString());
+    }
+});
+
+Object.defineProperty(Node.prototype, 'children', {
+    get: function() {
+        return handleNodes(call_python("get_children", this.handle));
     }
 });
 
@@ -62,6 +76,20 @@ Node.prototype.dispatchEvent = function(evt) {
         list[i].call(this, evt);
     }
     return evt.do_default;
+}
+
+Node.prototype.appendChild = function(child) {
+    call_python("append_child", this.handle, child.handle)
+    return child
+}
+
+Node.prototype.insertBefore = function(newNode, refNode) {
+    if (refNode === null) {
+        call_python("append_child", this.handle, newNode.handle)
+        return newNode
+    }
+    call_python("insert_before", this.handle, newNode.handle, refNode.handle)
+    return newNode
 }
 
 inputs = document.querySelectorAll('input')
