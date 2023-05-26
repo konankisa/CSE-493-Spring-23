@@ -35,10 +35,11 @@ def show_comments():
     out +=   "<p><input name=guest></p>"
     out +=   "<p><button>Sign the book!</button></p>"
     out += "</form>"
-    out += "<label></label>"
-    out += "<script src=/comment.js></script>"
     for entry in ENTRIES:
         out += "<p>" + entry + "</p>"
+    out += "<link rel=stylesheet href=/comment.css>"
+    out += "<label></label>"
+    out += "<script src=/comment.js></script>"
     return out
 
 def do_request(method, url, headers, body):
@@ -49,6 +50,9 @@ def do_request(method, url, headers, body):
         return "200 OK", add_entry(params)
     elif method == "GET" and url == "/comment.js":
         with open("comment.js") as f:
+            return "200 OK", f.read()
+    elif method == "GET" and url == "/comment.css":
+        with open("comment.css") as f:
             return "200 OK", f.read()
     else:
         return "404 Not Found", not_found(url, method)
@@ -61,11 +65,6 @@ def form_decode(body):
         value = urllib.parse.unquote_plus(value)
         params[name] = value
     return params
-
-def add_entry(params):
-    if 'guest' in params:
-        ENTRIES.append(params['guest'])
-    return show_comments()
 
 def not_found(url, method):
     out = "<!doctype html>"

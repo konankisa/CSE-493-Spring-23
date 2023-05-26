@@ -220,22 +220,22 @@ class HTMLParser:
                 i += 1
                 continue
             elif c == "<" and not open_quote:
-                if self.in_script:
-                    if self.body[i:i+9] == "</script>":
-                        self.in_script = False
-                        i += 9
-                    else:
-                        text += c
-                        i += 1
-                    continue
+                # if self.in_script:
+                #     if self.body[i:i+9] == "</script>":
+                #         self.in_script = False
+                #         i += 9
+                #     else:
+                #         text += c
+                #         i += 1
+                #     continue
                 tag = True
                 if text: self.add_text(text)
                 text = ""
             elif c == ">" and not open_quote:
-                if self.in_script:
-                    text += c
-                    i += 1
-                    continue
+                # if self.in_script:
+                #     text += c
+                #     i += 1
+                #     continue
                 tag = False
                 self.add_tag(text)
                 text = ""
@@ -1018,17 +1018,17 @@ class JSContext:
         return self.get_handle(elt)
     
     def append_child(self, parent_header, child_header):
-        parent = self.handle_to_node[parent]
-        child = self.handle_to_node[child]
+        parent = self.handle_to_node[parent_header]
+        child = self.handle_to_node[child_header]
         child.parent = parent
         parent.children.append(child)
         self.tab.render()
     
     def insert_before(self, parent_handle, new_handle, ref_handle):
-        parent = self.handle_to_node[parent]
+        parent = self.handle_to_node[parent_handle]
         new_node = self.handle_to_node[new_handle]
         ref_node = self.handle_to_node[ref_handle]
-        ref_index = parent.children.index[ref_node]
+        ref_index = parent.children.index(ref_node)
         parent.children.insert(ref_index, new_node)
         new_node.parent = parent
     
