@@ -1052,14 +1052,25 @@ class JSContext:
     
     def dispatch_event(self, type, elt):
         handle = self.node_to_handle.get(elt, -1)
-        do_default = self.interp.evaljs(EVENT_DISPATCH_CODE, type=type, handle=handle)
+        do_default, stop_propagation = self.interp.evaljs(EVENT_DISPATCH_CODE, type=type, handle=handle)
+        if not stop_propagation and elt.parent:
+            self.dispatch_event(type, elt.parent)
         return not do_default
     
     def innerHTML_set(self, handle, s):
         doc = HTMLParser("<html><body>" + s + "</body></html>").parse()
         new_nodes = doc.children[0].children
         elt = self.handle_to_node[handle]
+        for old_node in elt.children:
+            for node in tree_to_list(old_node, []):
+                if isinstance(node, Element) and "id" in node.attributes:
+                    self.run("delete {}".format(node.attributes["id"]))
+
         elt.children = new_nodes
+        for old_node in elt.children:
+            for node in tree_to_list(old_node, []):
+                if isinstance(node, Element) and "id" in node.attributes:
+                    self.run("{} = new Node({})".format(node.attributes["id"], self.get_handle(node)))
 
         for child in elt.children:
             child.parent = elt
@@ -1111,6 +1122,10 @@ class Tab:
                 self.js.run(body)
             except dukpy.JSRuntimeError as e:
                 print("Script", script, "crashed", e)
+
+        for node in tree_to_list(self.nodes, []):
+            if isinstance(node, Element) and "id" in node.attributes:
+                self.js.run("{} = new Node({})".format(node.attributes["id"], self.js.get_handle(node)))
 
         if "#" in url:
             node_list = []
