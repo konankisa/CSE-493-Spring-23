@@ -1,3 +1,4 @@
+from ast import Tuple
 from dataclasses import dataclass
 import re
 import socket
@@ -37,8 +38,9 @@ BLOCK_ELEMENTS = [
     "figcaption", "main", "div", "table", "form", "fieldset",
     "legend", "details", "summary"
 ]
+COOKIE_JAR = {}
 
-def request(url, payload=None, headers=None, redirects=0):
+def request(url, top_level_url, payload=None, headers=None, redirects=0, referrer_policy=None):
     # if too many redirects, raise an exception
     init_url = url
     if redirects > 8:
@@ -62,7 +64,7 @@ def request(url, payload=None, headers=None, redirects=0):
     # handle file scheme
     if scheme == "file":
         with open(url, "r") as f:
-            return {}, f.read()
+            return {}, f.read(), False
     
     host, path = url.split("/", 1)
     path = "/" + path
@@ -83,7 +85,10 @@ def request(url, payload=None, headers=None, redirects=0):
     # wrap socket if using https
     if scheme == "https":
         ctx = ssl.create_default_context()
-        s = ctx.wrap_socket(s, server_hostname=host)
+        try:
+            s = ctx.wrap_socket(s, server_hostname=host)
+        except:
+            return {}, "<!doctype html>\n Secure Connection Failed", False
 
     # check for user-input headers
     if headers is None:
@@ -98,9 +103,33 @@ def request(url, payload=None, headers=None, redirects=0):
     for header, value in headers.items():
         if header.lower() not in req:
             req += "{}: {}\r\n".format(header, value)
+    
     if payload:
         length = len(payload.encode("utf8"))
         req += "Content-Length: {}\r\n".format(length)
+    if referrer_policy == "no-referrer":
+        pass
+    elif referrer_policy == "same-origin":
+        _, _, top_level_host, _ = top_level_url.split("/", 3)
+        if ":" in top_level_host:
+            top_level_host, _ = top_level_host.split(":", 1)
+
+        if host == top_level_host:
+            req += "Referer: {}\r\n".format(top_level_url)
+    else:
+        req += "Referer: {}\r\n".format(top_level_url)
+    
+    if host in COOKIE_JAR:
+        cookie, params = COOKIE_JAR[host]
+        allow_cookie = True
+        if top_level_url and params.get("samesite", "none") == "lax":
+            _, _, top_level_host, _ = top_level_url.split("/", 3)
+            if ":" in top_level_host:
+                top_level_host, _ = top_level_host.split(":", 1)
+            allow_cookie = (host == top_level_host or method == "GET")
+        if allow_cookie:
+            req += "Cookie: {}\r\n".format(cookie)
+
     req += "\r\n" + (payload if payload else "")
 
     s.send(req.encode("utf8"))
@@ -120,6 +149,24 @@ def request(url, payload=None, headers=None, redirects=0):
         header, value = line.split(":", 1)
         cur_headers[header.lower()] = value.strip()
     
+    if "referer" in cur_headers:
+        top_level_url = cur_headers["referer"]
+
+    if "set-cookie" in cur_headers:
+        params = {}
+        if ";" in cur_headers["set-cookie"]:
+            cookie, rest = cur_headers["set-cookie"].split(";", 1)
+            for param_pair in rest.split(";"):
+                if "=" in param_pair:
+                    name, value = param_pair.strip().split("=", 1)
+                else:
+                    name = param_pair.strip()
+                    value = ""
+                params[name.lower()] = value.lower()
+        else:
+            cookie = cur_headers["set-cookie"]
+        COOKIE_JAR[host] = (cookie, params)
+    
     # handle redirects
     if status >= "300" and status < "400":
         location = cur_headers["location"]
@@ -136,13 +183,13 @@ def request(url, payload=None, headers=None, redirects=0):
     # check for cache-control header
     if "cache-control" in cur_headers:
         if "no-store" in cur_headers["cache-control"]:
-            return cur_headers, body
+            return cur_headers, body, scheme == "https"
         if "max-age" in cur_headers["cache-control"]:
             max_age = int(cur_headers["cache-control"].split("=", 1)[1])
             cur_time = time.time() + max_age
             cached_urls[init_url] = (cur_time, cur_headers, body)
 
-    return cur_headers, body
+    return cur_headers, body, scheme == "https"
 
 def resolve_url(url, current):
     if "://" in url:
@@ -901,6 +948,11 @@ class InputLayout:
                     text = ""
             else:
                 text = self.node.attributes.get("value", "")
+            if self.node.attributes.get("type", "") == "hidden":
+                self.width = 0.0
+                self.height = 0.0
+            if self.node.attributes.get("type", "") == "password":
+                text = "*" * len(self.node.attributes.get("value", ""))
         elif self.node.tag == "button":
             if len(self.node.children) == 1 and \
                isinstance(self.node.children[0], Text):
@@ -999,6 +1051,9 @@ class JSContext:
         self.interp.export_function("create_element", self.create_element)
         self.interp.export_function("append_child", self.append_child)
         self.interp.export_function("insert_before", self.insert_before)
+        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
+        self.interp.export_function("get_cookie", self.get_cookie)
+        self.interp.export_function("set_cookie", self.set_cookie)
         self.node_to_handle = {}
         self.handle_to_node = {}
 
@@ -1007,6 +1062,31 @@ class JSContext:
 
     def run(self, code):
         return self.interp.evaljs(code)
+    
+    def get_cookie(self):
+        _, _, host, _ = self.tab.url.split("/", 3)
+        res, params = COOKIE_JAR.get(host, ("", {}))
+        if "httponly" in params:
+            return ""
+        return "{}".format(res)
+
+    def set_cookie(self, s):
+        _, _, host, _ = self.tab.url.split("/", 3)
+        old_res, old_params = COOKIE_JAR.get(host, ("", {}))
+        if "httponly" in old_params:
+            return
+        
+        params = {}
+        if ";" in s:
+            s, rest = s.split(";", 1)
+            for param_pair in rest.split(";"):
+                if "=" in param_pair:
+                    name, value = param_pair.strip().split("=", 1)
+                else:
+                    name = param_pair.strip()
+                    value = ""
+                params[name.lower()] = value.lower()
+        COOKIE_JAR[host] = (s, params)
     
     def get_children(self, handle):
         node = self.handle_to_node[handle]
@@ -1075,6 +1155,19 @@ class JSContext:
         for child in elt.children:
             child.parent = elt
         self.tab.render()
+    
+    def XMLHttpRequest_send(self, method, url, body):
+        full_url = resolve_url(url, self.tab.url)
+        if not self.tab.allowed_request(full_url):
+            raise Exception("Cross-origin XHR blocked by CSP")
+        if url_origin(full_url) != url_origin(self.tab.url):
+            raise Exception("Cross-origin XHR request not allowed")
+        headers, out, _ = request(full_url, self.tab.url, body)
+        return out
+
+def url_origin(url):
+    scheme_colon, _, host, _ = url.split("/", 3)
+    return scheme_colon + "//" + host
 
 class Tab:
     def __init__(self, browser):
@@ -1084,18 +1177,32 @@ class Tab:
         self.active_tab = None
         self.browser = browser
         self.focus = None
+        self.url = None
+        self.referrer_policy = None
     
     def load(self, url, body=None):
         frag = url
         if "#" in url:
             frag, frag2 = url.split("#", 1)
         
-        headers, body = request(frag, body)
+        headers, body, secured = request(frag, self.url, body, referrer_policy=self.referrer_policy)
+        self.secured = secured
         self.scroll = 0
         self.url = url
         self.history.append(url)
         self.nodes = HTMLParser(body).parse()
         self.rules = self.default_style_sheet.copy()
+
+        if "referrer-policy" in headers:
+            self.referrer_policy = headers["referrer-policy"]
+        else:
+            self.referrer_policy = None
+
+        self.allowed_origins = None
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].split()
+            if len(csp) > 0 and csp[0] == "default-src":
+                self.allowed_origins = csp[1:]
         
         links = [node.attributes["href"]
                  for node in tree_to_list(self.nodes, [])
@@ -1103,12 +1210,6 @@ class Tab:
                  and node.tag == "link"
                  and "href" in node.attributes
                  and node.attributes.get("rel") == "stylesheet"]
-        for link in links:
-            try:
-                header, body = request(resolve_url(link, url))
-            except:
-                continue
-            self.rules.extend(CSSParser(body).parse())
 
         scripts = [node.attributes["src"] for node
                    in tree_to_list(self.nodes, [])
@@ -1117,11 +1218,26 @@ class Tab:
                    and "src" in node.attributes]
         self.js = JSContext(self)
         for script in scripts:
-            header, body = request(resolve_url(script, url))
+            script_url = resolve_url(script, url)
+            if not self.allowed_request(script_url):
+                print("Blocked script", script, "due to CSP")
+                continue
+            header, body, _ = request(script_url, url, referrer_policy=self.referrer_policy)
             try:
                 self.js.run(body)
             except dukpy.JSRuntimeError as e:
                 print("Script", script, "crashed", e)
+        
+        for link in links:
+            style_url = resolve_url(link, url)
+            if not self.allowed_request(style_url):
+                print("Blocked style", link, "due to CSP")
+                continue
+            try:
+                header, body, _ = request(style_url, url, referrer_policy=self.referrer_policy)
+            except:
+                continue
+            self.rules.extend(CSSParser(body).parse())
 
         for node in tree_to_list(self.nodes, []):
             if isinstance(node, Element) and "id" in node.attributes:
@@ -1136,6 +1252,10 @@ class Tab:
                     self.scroll = node.y
                     break
         self.render()
+    
+    def allowed_request(self, url):
+        return self.allowed_origins == None or \
+            url_origin(url) in self.allowed_origins
     
     def render(self):
         style(self.nodes, sorted(self.rules, key=cascade_priority))
@@ -1391,7 +1511,11 @@ class Browser:
             self.canvas.create_line(55 + w, 55, 55 + w, 85, fill="black")
         else:
             url = self.tabs[self.active_tab].url
-            self.canvas.create_text(55, 55, anchor='nw', text=url,
+            if self.tabs[self.active_tab].secured:
+                address_bar = "\N{LOCK} " + url
+            else:
+                address_bar = url
+            self.canvas.create_text(55, 55, anchor='nw', text=address_bar,
                 font=buttonfont, fill="black")
         
     def keypress(self, char):
